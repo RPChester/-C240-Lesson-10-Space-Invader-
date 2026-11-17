@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alien Shooter</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #000;
+      color: #fff;
+      font-family: monospace;
+    }
+
+    .screen-frame {
+      padding: 8px;
+      border: 4px solid #75d66b;
+      box-shadow: 0 0 0 3px #294527;
+    }
+
+    canvas {
+      display: block;
+      background: #000;
+    }
+
+    .instructions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      margin: 12px;
+      color: #bdbdc7;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .control {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    kbd {
+      display: inline-grid;
+      min-width: 32px;
+      height: 30px;
+      padding: 0 7px;
+      place-items: center;
+      border: 2px solid #58c7e8;
+      border-bottom-width: 4px;
+      border-radius: 5px;
+      background: #20202b;
+      color: #fff;
+      font: bold 14px monospace;
+    }
+
+    .space-key {
+      min-width: 82px;
+      border-color: #d88ae8;
+    }
+
+    .wave-hint {
+      flex-basis: 100%;
+      margin: 0;
+    }
+
+    .credit {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      margin: 0;
+      padding: 10px 14px;
+      border: 2px solid #75d66b;
+      border-radius: 6px;
+      background: #20202b;
+      box-shadow: 0 0 12px rgba(117, 214, 107, 0.65);
+      color: #fff;
+      font-size: 16px;
+      font-weight: bold;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="screen-frame">
+      <canvas id="game" width="800" height="600" aria-label="Alien shooter game">
+        Your browser does not support HTML canvas.
+      </canvas>
+    </div>
+    <section class="instructions" aria-label="Game controls">
+      <div class="control"><span>Move</span><kbd>&larr;</kbd><kbd>&rarr;</kbd></div>
+      <div class="control"><span>Fire</span><kbd class="space-key">SPACE</kbd></div>
+      <p class="wave-hint">Clear each wave to speed up</p>
+    </section>
+  </main>
+  <p class="credit">E65Q - Chester Goh Shao Heng</p>
+  <script>
+    const canvas = document.getElementById("game");
+    const context = canvas.getContext("2d");
+    const keys = new Set();
+    const enemyColors = ["#d88ae8", "#58c7e8", "#75d66b", "#f7d154", "#ff8c42"];
+    const enemyColumns = 8;
+    const enemyRows = enemyColors.length;
+    const enemyWidth = 34;
+    const enemyHeight = 24;
+    const enemyGapX = 25;
+    const enemyGapY = 24;
+    const enemyFireInterval = 90;
+    const coverTileSize = 8;
+    const coverCount = 3;
+    const playerShotCooldownFrames = 30;
+    const highScoreStorageKey = "alienShooterHighScore";
+    const baseEnemySpeed = 0.45;
+    const enemySpeedPerWave = 0.15;
+    const baseEnemyShotSpeed = 1.5;
+    const enemyShotSpeedPerWave = 0.25;
+    const player = {
+      width: 50,
+      height: 20,
+      x: (canvas.width - 50) / 2,
+      y: canvas.height - 44,
+      speed: 3,
+      lives: 3,
+      invulnerableFrames: 0,
+      respawnFrames: 0
+    };
+    let enemies = [];
+    let covers = [];
+    let playerShots = [];
+    let enemyShots = [];
+    let enemyDirection = 1;
+    let enemySpeed = baseEnemySpeed;
+    let enemyShotSpeed = baseEnemyShotSpeed;
+    let playerShotCooldown = 0;
+    let frameCount = 0;
+    let gameState = "playing";
+    let level = 1;
+    let score = 0;
+    let destroyedCount = 0;
+    let highScore = loadHighScore();
+    let audioContext = null;
+
+    function loadHighScore() {
+      try {
+        const savedScore = Number(window.localStorage.getItem(highScoreStorageKey));
+        return Number.isFinite(savedScore) && savedScore > 0 ? savedScore : 0;
+      } catch (error) {
+        console.error("Could not load the saved high score.", error);
+        return 0;
+      }
+    }
+
+    function saveHighScore() {
+      try {
+        window.localStorage.setItem(highScoreStorageKey, String(highScore));
+      } catch (error) {
+        console.error("Could not save the high score.", error);
+      }
+    }
+
+    function enableAudio() {
+      const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextConstructor) {
+        return;
+      }
+
+      if (audioContext === null) {
+        audioContext = new AudioContextConstructor();
+      }
+      if (audioContext.state === "suspended") {
+        audioContext.resume().catch((error) => {
+          console.error("Could not enable game audio.", error);
+        });
+      }
+    }
+
+    function playTone(startFrequency, endFrequency, duration, waveform) {
+      if (audioContext === null) {
+        return;
+      }
+
+      const now = audioContext.currentTime;
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = waveform;
+      oscillator.frequency.setValueAtTime(startFrequency, now);
+      oscillator.frequency.exponentialRampToValueAtTime(endFrequency, now + duration);
+      gain.gain.setValueAtTime(0.06, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.start(now);
+      oscillator.stop(now + duration);
+    }
+
+    function endGame() {
+      if (gameState !== "playing") {
+        return;
+      }
+      gameState = "lost";
+      playTone(220, 55, 0.65, "triangle");
+    }
+
+    function createEnemies() {
+      const formationWidth = enemyColumns * enemyWidth + (enemyColumns - 1) * enemyGapX;
+      const startX = (canvas.width - formationWidth) / 2;
+      const startY = 64;
+
+      return Array.from({ length: enemyRows * enemyColumns }, (_, index) => {
+        const row = Math.floor(index / enemyColumns);
+        const column = index % enemyColumns;
+
+        return {
+          x: startX + column * (enemyWidth + enemyGapX),
+          y: startY + row * (enemyHeight + enemyGapY),
+          width: enemyWidth,
+          height: enemyHeight,
+          color: enemyColors[row]
+        };
+      });
+    }
+
+    function createCovers() {
+      const coverWidth = 11 * coverTileSize;
+      const coverY = player.y - 78;
+      const covers = [];
+
+      for (let coverIndex = 0; coverIndex < coverCount; coverIndex += 1) {
+        const startX = (canvas.width / (coverCount + 1)) * (coverIndex + 1) - coverWidth / 2;
+
+        for (let row = 0; row < 5; row += 1) {
+          for (let column = 0; column < 11; column += 1) {
+            const isRoundedTop = row === 0 && (column < 2 || column > 8);
+            const isInset = row === 1 && (column === 0 || column === 10);
+            const isFiringGap = row === 4 && column >= 4 && column <= 6;
+
+            if (!isRoundedTop && !isInset && !isFiringGap) {
+              covers.push({
+                x: startX + column * coverTileSize,
+                y: coverY + row * coverTileSize,
+                width: coverTileSize,
+                height: coverTileSize
+              });
+            }
+          }
+        }
+      }
+
+      return covers;
+    }
+
+    function startWave() {
+      enemies = createEnemies();
+      covers = createCovers();
+      playerShots = [];
+      enemyShots = [];
+      enemyDirection = 1;
+      enemySpeed = baseEnemySpeed + (level - 1) * enemySpeedPerWave;
+      enemyShotSpeed = baseEnemyShotSpeed + (level - 1) * enemyShotSpeedPerWave;
+    }
+
+    function restartGame() {
+      player.x = (canvas.width - player.width) / 2;
+      player.lives = 3;
+      player.invulnerableFrames = 0;
+      player.respawnFrames = 0;
+      keys.clear();
+      level = 1;
+      score = 0;
+      destroyedCount = 0;
+      startWave();
+      playerShotCooldown = 0;
+      frameCount = 0;
+      gameState = "playing";
+    }
+
+    function startNextWave() {
+      level += 1;
+      startWave();
+    }
+
+    function firePlayerShot() {
+      playerShots.push({
+        x: player.x + player.width / 2 - 2,
+        y: player.y - 10,
+        width: 4,
+        height: 10,
+        speed: 3
+      });
+      playerShotCooldown = playerShotCooldownFrames;
+    }
+
+    function fireEnemyShot() {
+      if (enemies.length === 0) {
+        return;
+      }
+
+      const shooter = enemies[Math.floor(Math.random() * enemies.length)];
+      enemyShots.push({
+        x: shooter.x + shooter.width / 2 - 2,
+        y: shooter.y + shooter.height,
+        width: 4,
+        height: 10,
+        speed: enemyShotSpeed
+      });
+    }
+
+    function overlaps(a, b) {
+      return a.x < b.x + b.width &&
+        a.x + a.width > b.x &&
+        a.y < b.y + b.height &&
+        a.y + a.height > b.y;
+    }
+
+    function removeCoversTouchedByInvaders() {
+      covers = covers.filter((cover) => !enemies.some((enemy) => overlaps(enemy, cover)));
+    }
+
+    function updatePlayer() {
+      if (player.invulnerableFrames === 0) {
+        if (keys.has("ArrowLeft")) {
+          player.x -= player.speed;
+        }
+        if (keys.has("ArrowRight")) {
+          player.x += player.speed;
+        }
+        player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+      }
+
+      if (player.invulnerableFrames > 0) {
+        player.invulnerableFrames -= 1;
+      }
+      if (player.respawnFrames > 0) {
+        player.respawnFrames -= 1;
+      }
+      if (playerShotCooldown > 0) {
+        playerShotCooldown -= 1;
+      }
+    }
+
+    function updateEnemies() {
+      const leftEdge = Math.min(...enemies.map((enemy) => enemy.x));
+      const rightEdge = Math.max(...enemies.map((enemy) => enemy.x + enemy.width));
+      const nextLeft = leftEdge + enemyDirection * enemySpeed;
+      const nextRight = rightEdge + enemyDirection * enemySpeed;
+
+      if (nextLeft < 20 || nextRight > canvas.width - 20) {
+        enemyDirection *= -1;
+        enemies.forEach((enemy) => {
+          enemy.y += 22;
+        });
+      }
+
+      enemies.forEach((enemy) => {
+        enemy.x += enemyDirection * enemySpeed;
+      });
+      removeCoversTouchedByInvaders();
+
+      if (frameCount % enemyFireInterval === 0) {
+        fireEnemyShot();
+      }
+
+      if (enemies.some((enemy) => enemy.y + enemy.height >= player.y)) {
+        endGame();
+      }
+    }
+
+    function updateShots() {
+      playerShots.forEach((shot) => {
+        shot.y -= shot.speed;
+      });
+      enemyShots.forEach((shot) => {
+        shot.y += shot.speed;
+      });
+
+      playerShots = playerShots.filter((shot) => shot.y + shot.height > 0);
+      enemyShots = enemyShots.filter((shot) => shot.y < canvas.height);
+
+      playerShots = playerShots.filter((shot) => {
+        const coverIndex = covers.findIndex((cover) => overlaps(shot, cover));
+        if (coverIndex !== -1) {
+          covers.splice(coverIndex, 1);
+          return false;
+        }
+
+        const hitIndex = enemies.findIndex((enemy) => overlaps(shot, enemy));
+        if (hitIndex === -1) {
+          return true;
+        }
+
+        enemies.splice(hitIndex, 1);
+        destroyedCount += 1;
+        score += 10;
+        playTone(280, 70, 0.2, "sawtooth");
+        if (score > highScore) {
+          highScore = score;
+          saveHighScore();
+        }
+        return false;
+      });
+
+      enemyShots = enemyShots.filter((shot) => {
+        if (gameState !== "playing") {
+          return false;
+        }
+
+        const coverIndex = covers.findIndex((cover) => overlaps(shot, cover));
+        if (coverIndex !== -1) {
+          covers.splice(coverIndex, 1);
+          return false;
+        }
+
+        if (player.invulnerableFrames === 0 && overlaps(shot, player)) {
+          player.lives -= 1;
+          if (player.lives === 0) {
+            player.invulnerableFrames = 0;
+            player.respawnFrames = 0;
+            endGame();
+          } else {
+            player.x = (canvas.width - player.width) / 2;
+            player.invulnerableFrames = 150;
+            player.respawnFrames = 30;
+            playTone(280, 70, 0.2, "sawtooth");
+          }
+          return false;
+        }
+        return true;
+      });
+
+      if (gameState === "playing" && enemies.length === 0) {
+        startNextWave();
+      }
+    }
+
+    function drawEnemy(enemy) {
+      context.fillStyle = enemy.color;
+      context.fillRect(enemy.x + 9, enemy.y, 16, 5);
+      context.fillRect(enemy.x + 4, enemy.y + 5, 26, 6);
+      context.fillRect(enemy.x, enemy.y + 11, 34, 5);
+      context.fillRect(enemy.x + 5, enemy.y + 16, 8, 6);
+      context.fillRect(enemy.x + 21, enemy.y + 16, 8, 6);
+
+      context.fillStyle = "#101018";
+      context.fillRect(enemy.x + 9, enemy.y + 8, 4, 3);
+      context.fillRect(enemy.x + 21, enemy.y + 8, 4, 3);
+    }
+
+    function drawCovers() {
+      context.fillStyle = "#75d66b";
+      covers.forEach((cover) => {
+        context.fillRect(cover.x, cover.y, cover.width - 1, cover.height - 1);
+      });
+    }
+
+    function drawGame() {
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      context.fillStyle = "#fff";
+      context.font = "16px monospace";
+      context.textAlign = "left";
+      context.fillText(`SCORE ${score}`, 20, 26);
+      context.fillText(`LIVES ${player.lives}`, 20, 50);
+      context.textAlign = "center";
+      context.fillStyle = "#d88ae8";
+      context.fillText(`HIGHSCORE ${highScore}`, canvas.width / 2, 26);
+      context.textAlign = "right";
+      context.fillStyle = "#fff";
+      context.fillText(`DESTROYED ${destroyedCount}`, canvas.width - 20, 26);
+      context.fillText(`WAVE ${level}`, canvas.width - 20, 50);
+
+      enemies.forEach(drawEnemy);
+      drawCovers();
+
+      context.fillStyle = "#8fffe0";
+      playerShots.forEach((shot) => {
+        context.fillRect(shot.x, shot.y, shot.width, shot.height);
+      });
+      context.fillStyle = "#ff6b8a";
+      enemyShots.forEach((shot) => {
+        context.fillRect(shot.x, shot.y, shot.width, shot.height);
+      });
+
+      const showPlayer = player.respawnFrames === 0 &&
+        (player.invulnerableFrames === 0 || frameCount % 12 < 6);
+      if (showPlayer) {
+        context.fillStyle = "#fff";
+        context.fillRect(player.x, player.y, player.width, player.height);
+      }
+
+      if (gameState !== "playing") {
+        context.fillStyle = "rgba(0, 0, 0, 0.75)";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#ff8c42";
+        context.textAlign = "center";
+        context.font = "bold 42px sans-serif";
+        context.fillText("GAME OVER", canvas.width / 2, canvas.height / 2 - 12);
+        context.fillStyle = "#fff";
+        context.font = "18px sans-serif";
+        context.fillText("Restart? Press any key to restart", canvas.width / 2, canvas.height / 2 + 28);
+      }
+    }
+
+    function animate() {
+      if (gameState === "playing") {
+        frameCount += 1;
+        updatePlayer();
+        if (enemies.length > 0) {
+          updateEnemies();
+        }
+        if (gameState === "playing") {
+          updateShots();
+        }
+      }
+
+      drawGame();
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener("keydown", (event) => {
+      enableAudio();
+      if (gameState !== "playing") {
+        if (event.code === "Space" || event.code === "ArrowLeft" || event.code === "ArrowRight") {
+          event.preventDefault();
+        }
+        restartGame();
+        return;
+      }
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        if (!event.repeat && gameState === "playing" && player.respawnFrames === 0 &&
+          playerShots.length === 0 && playerShotCooldown === 0) {
+          firePlayerShot();
+          playTone(760, 360, 0.12, "square");
+        }
+      } else if (event.code === "ArrowLeft" || event.code === "ArrowRight") {
+        event.preventDefault();
+        keys.add(event.code);
+      }
+    });
+
+    window.addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    window.addEventListener("blur", () => {
+      keys.clear();
+    });
+
+    restartGame();
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
